@@ -14,20 +14,25 @@ def map_demand_level(predicted_qty):
         return "High (Forte)"
 
 def predict_demand(category, horizon=1):
-    """Charge les résultats du modèle LSTM ou génère des données de secours si introuvable."""
+    """Charge les résultats du modèle LSTM et convertit les types pour éviter les conflits NumPy/Listes."""
     try:
         # Lecture du dictionnaire de résultats LSTM transféré sur GitHub
         with open("lstm_results.pkl", "rb") as f:
             lstm_data = pickle.load(f)
     except Exception:
-        # Si le fichier pkl ne s'ouvre pas, on initialise un dictionnaire vide
         lstm_data = {}
 
     # 1. Cas où la catégorie existe réellement dans vos résultats LSTM
     if category in lstm_data:
         cat_data = lstm_data[category]
-        historical = cat_data.get("historical", [100, 110, 105, 120])
-        future = cat_data.get("future", [130, 140, 150])
+        
+        # Récupération des données d'origine (Listes ou Tableaux NumPy)
+        raw_historical = cat_data.get("historical", [100, 110, 105, 120])
+        raw_future = cat_data.get("future", [130, 140, 150])
+        
+        # SÉCURISATION : Conversion stricte en listes standards Python pour le "+" de la ligne 89
+        historical = raw_historical.tolist() if hasattr(raw_historical, "tolist") else list(raw_historical)
+        future = raw_future.tolist() if hasattr(raw_future, "tolist") else list(raw_future)
         
         idx = min(horizon - 1, len(future) - 1)
         predicted_qty = int(future[idx])
@@ -40,20 +45,13 @@ def predict_demand(category, horizon=1):
             "future": future
         }
         
-    # 2. Cas de secours (Ex: Sweaters, Jackets) pour éviter que l'application ne crash
+    # 2. Cas de secours (Simulation propre) pour les catégories absentes du pkl
     else:
-        # On génère des listes par défaut pour que l'interface puisse tracer les graphiques Plotly sans erreur
-        default_historical = [140, 165, 150, 175]
-        default_future = [190, 210, 235]
-        
-        idx = min(horizon - 1, len(default_future) - 1)
-        predicted_qty = default_future[idx]
-        
         return {
-            "predicted_qty": predicted_qty,
+            "predicted_qty": 190,
             "tendance": "📈 En hausse (Simulation)",
-            "historical": default_historical,
-            "future": default_future
+            "historical": [140, 165, 150, 175],
+            "future": [190, 210, 235]
         }
 
 def get_recommendation(season, category, brand, color, price, rating, markdown, demand):
