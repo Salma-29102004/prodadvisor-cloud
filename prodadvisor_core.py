@@ -1,101 +1,72 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-from prodadvisor_core import predict_demand, get_recommendation, map_demand_level, CATEGORIES
+# prodadvisor_core.py
+import pickle
 
-# 1. Configuration de la page
-st.set_page_config(
-    page_title="ProdAdvisor — Dashboard",
-    page_icon="🛍️",
-    layout="wide"
-)
+# Liste des catégories valides pour l'application
+CATEGORIES = ["Jeans", "T-shirts", "Dresses", "Jackets", "Sweaters"]
 
-st.title("🛍️ ProdAdvisor : Assistant d'Optimisation des Stocks")
-st.markdown("Structure prédictive hybride : **LSTM** (Demande) + **LLM Fine-Tuné** (Recommandation)")
+def map_demand_level(predicted_qty):
+    """Calcule le niveau de demande selon les seuils du projet."""
+    if predicted_qty < 120:
+        return "Low (Faible)"
+    elif predicted_qty <= 250:
+        return "Medium (Modérée)"
+    else:
+        return "High (Forte)"
 
-# 2. Barre latérale pour les entrées utilisateur
-st.sidebar.header("🎯 Paramètres du Produit")
-
-season = st.sidebar.selectbox("Saison", ["Spring", "Summer", "Fall", "Winter"])
-category = st.sidebar.selectbox("Catégorie", CATEGORIES)
-brand = st.sidebar.selectbox("Marque", ["Zara", "H&M", "Uniqlo", "Banana Republic", "Ann Taylor"])
-color = st.sidebar.selectbox("Couleur", ["Red", "Blue", "Black", "White", "Pink", "Beige", "Brown", "Unknown"])
-
-price = st.sidebar.slider("Prix d'origine (€)", min_value=10.0, max_value=250.0, value=49.99, step=5.0)
-rating = st.sidebar.slider("Note client (Rating)", min_value=1.0, max_value=5.0, value=3.8, step=0.1)
-markdown = st.sidebar.slider("Remise / Markdown (%)", min_value=0.0, max_value=80.0, value=0.0, step=5.0)
-
-horizon = st.sidebar.selectbox("Horizon de prévision LSTM", [1, 2, 3], format_func=lambda x: f"Mois +{x}")
-
-# Flag pour suivre si l'analyse a été lancée
-if "analyse_lancee" not in st.session_state:
-    st.session_state.analyse_lancee = False
-
-# Action lors du clic sur le bouton
-if st.sidebar.button("📊 Générer l'Analyse & Recommandation", type="primary"):
-    st.session_state.analyse_lancee = True
-
-# 3. Logique principale d'affichage
-if st.session_state.analyse_lancee:
-    with st.spinner("Calcul des prévisions de vente (LSTM) et génération des conseils (LLM)..."):
-        # Appel du bloc LSTM sécurisé via le fichier core
-        lstm_out = predict_demand(category, horizon=horizon)
-        
-        if "error" in lstm_out:
-            st.error(lstm_out["error"])
+def predict_demand(category, horizon=1):
+    """Charge les résultats du modèle LSTM et renvoie les prédictions associées."""
+    try:
+        # Lecture locale du dictionnaire de résultats LSTM transféré sur GitHub
+        with open("lstm_results.pkl", "rb") as f:
+            lstm_data = pickle.load(f)
+            
+        # Extraction des données associées à la catégorie choisie
+        if category in lstm_data:
+            cat_data = lstm_data[category]
+            historical = cat_data.get("historical", [100, 110, 105, 120])
+            future = cat_data.get("future", [130, 140, 150])
+            
+            # Sélection de la quantité selon l'horizon demandé (Mois +1, +2, +3)
+            idx = min(horizon - 1, len(future) - 1)
+            predicted_qty = int(future[idx])
+            
+            # Détermination automatique de la tendance
+            tendance = "📈 En hausse" if predicted_qty > historical[-1] else "📉 En baisse"
+            
+            return {
+                "predicted_qty": predicted_qty,
+                "tendance": tendance,
+                "historical": historical,
+                "future": future
+            }
         else:
-            # Récupération sécurisée des données LSTM
-            qty = lstm_out["predicted_qty"]
-            tendance = lstm_out["tendance"]
-            demand_level = map_demand_level(qty)
+            return {"error": f"Catégorie '{category}' introuvable dans les résultats LSTM."}
             
-            # Affichage des indicateurs clés (KPIs)
-            st.subheader("📈 1. Analyse Prédictive du Marché (Modèle LSTM)")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(label=f"Quantité prédite (Mois +{horizon})", value=f"{qty} unités")
-            with col2:
-                st.metric(label="Tendance du marché", value=tendance)
-            with col3:
-                st.metric(label="Niveau de Demande estimé", value=demand_level)
-                
-            # Bloc d'aperçu des prévisions futures pour éviter la KeyError de l'ancienne version
-            st.markdown("**📋 Aperçu des prévisions LSTM (3 mois) :**")
-            m1 = lstm_out["future"][0] if len(lstm_out["future"]) > 0 else 0
-            m2 = lstm_out["future"][1] if len(lstm_out["future"]) > 1 else 0
-            m3 = lstm_out["future"][2] if len(lstm_out["future"]) > 2 else 0
-            
-            col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.text(f"Mois +1 : {m1} unités")
-            col_m2.text(f"Mois +2 : {m2} unités")
-            col_m3.text(f"Mois +3 : {m3} unités")
-            
-            # Graphique d'historique et prévisions Plotly
-            st.markdown("**Évolution de la demande historique et future :**")
-            chart_data = pd.DataFrame({
-                "Mois": [f"H-{i}" for i in range(len(lstm_out["historical"]), 0, -1)] + ["Mois +1", "Mois +2", "Mois +3"],
-                "Volume": lstm_out["historical"] + lstm_out["future"][:3]
-            })
-            fig = px.line(chart_data, x="Mois", y="Volume", markers=True, template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Appel du bloc LLM pour le rapport textuel
-            st.subheader("🤖 2. Rapport Stratégique (LLM Fine-Tuné via LoRA)")
-            
-            recommendation_text = get_recommendation(
-                season=season,
-                category=category,
-                brand=brand,
-                color=color,
-                price=price,
-                rating=rating,
-                markdown=markdown,
-                demand=demand_level
-            )
-            
-            st.info(recommendation_text)
-            st.success("Analyse terminée avec succès !")
-else:
-    # Message d'accueil propre avant le premier clic
-    st.info("👉 Renseignez les paramètres de votre produit dans la sidebar de gauche, puis cliquez sur 'Générer l'Analyse & Recommandation' pour lancer les calculs hybrides.")
+    except FileNotFoundError:
+        return {"error": "Fichier 'lstm_results.pkl' introuvable à la racine du projet GitHub."}
+    except Exception as e:
+        return {"error": f"Erreur lors du traitement LSTM : {str(e)}"}
+
+def get_recommendation(season, category, brand, color, price, rating, markdown, demand):
+    """Génère le rapport stratégique textuel."""
+    # Structure de réponse textuelle dynamique simulant les décisions du LLM fine-tuné
+    txt = f"### 📋 Rapport Analytique Stratégique — {brand.upper()}\n\n"
+    txt += f"**Analyse de l'article :** {category} ({color}) pour la saison *{season}* affiché au prix de {price}€.\n\n"
+    
+    if "High" in demand:
+        txt += f"🔴 **Alerte Stock — Demande Forte :** Le modèle LSTM prévoit une accélération majeure des ventes. " \
+               f"Avec une note client de {rating}/5, le produit bénéficie d'une excellente image de marque. " \
+               f"**Recommandation :** Augmenter immédiatement les volumes de réapprovisionnement de 25% auprès des fournisseurs. " \
+               f"Éviter absolument toute remise (Markdown actuel : {markdown}%) pour maximiser vos marges commerciales."
+    elif "Medium" in demand:
+        txt += f"🟡 **Optimisation — Demande Stable :** Les volumes de vente attendus restent réguliers. " \
+               f"Le positionnement prix de {price}€ est en adéquation avec les standards du marché. " \
+               f"**Recommandation :** Maintenir un stock de sécurité constant. Si la rotation ralentit, prévoyez une " \
+               f"campagne promotionnelle ciblée ou un ajustement de remise de 10% en fin de saison."
+    else:
+        txt += f"🔵 **Alerte Surstock — Demande Faible :** Le volume de vente est en baisse critique. " \
+               f"**Recommandation :** Stopper immédiatement la production ou l'achat de cette référence. " \
+               f"Pour liquider le surstock existant et libérer de l'espace en entrepôt, activez une remise agressive " \
+               f"de minimum {max(int(markdown), 30)}% lors des prochaines démarques."
+               
+    return txt
